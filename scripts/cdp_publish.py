@@ -46,17 +46,17 @@ Library usage:
     )
 """
 
+import base64
+import csv
 import json
 import os
 import random
-import time
 import sys
-import csv
-import base64
+import time
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from urllib.parse import parse_qs, urlencode, urlparse
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
+from zoneinfo import ZoneInfo
 
 # Add scripts dir to path so sibling modules can be imported in both
 # "python scripts/cdp_publish.py" and "import scripts.cdp_publish" modes.
@@ -76,10 +76,10 @@ if sys.platform == "win32":
 import requests
 import websockets.sync.client as ws_client
 from feed_explorer import (
-    SEARCH_BASE_URL,
     LOCATION_OPTIONS,
     NOTE_TYPE_OPTIONS,
     PUBLISH_TIME_OPTIONS,
+    SEARCH_BASE_URL,
     SEARCH_SCOPE_OPTIONS,
     SORT_BY_OPTIONS,
     FeedExplorer,
@@ -102,6 +102,10 @@ XHS_CREATOR_URL = "https://creator.xiaohongshu.com/publish/publish?source=offici
 XHS_HOME_URL = "https://www.xiaohongshu.com"
 XHS_NOTIFICATION_URL = "https://www.xiaohongshu.com/notification"
 XHS_CREATOR_LOGIN_CHECK_URL = "https://creator.xiaohongshu.com"
+XHS_CREATOR_STAT_ACCOUNT_URL = "https://creator.xiaohongshu.com/statistics/account/v2"
+XHS_CREATOR_STAT_FANS_URL = "https://creator.xiaohongshu.com/statistics/fans-data"
+XHS_CREATOR_NOTE_MANAGER_URL = "https://creator.xiaohongshu.com/new/note-manager"
+XHS_CREATOR_PROFILE_API_PATH = "https://creator.xiaohongshu.com/api/galaxy/user/info"
 XHS_HOME_LOGIN_MODAL_KEYWORD = "登录后推荐更懂你的笔记"
 XHS_CONTENT_DATA_URL = "https://creator.xiaohongshu.com/statistics/data-analysis"
 XHS_CONTENT_DATA_API_PATH = "/api/galaxy/creator/datacenter/note/analyze/list"
@@ -182,6 +186,7 @@ def _resolve_account_name(account_name: str | None) -> str:
         return account_name.strip()
     try:
         from account_manager import get_default_account
+
         resolved = get_default_account()
         if isinstance(resolved, str) and resolved.strip():
             return resolved.strip()
@@ -212,22 +217,23 @@ def _format_post_time(post_time_ms: Any) -> str:
     except Exception:
         return "-"
 
+
 def validate_schedule_post_time(dt_str: str | None) -> bool:
     """
     Validate a datetime string in the format 'yyyy-MM-dd HH:mm'.
-    
+
     Rules:
     1. If input is None or empty, return False.
     2. The datetime format must strictly match '%Y-%m-%d %H:%M'.
     3. The datetime must fall within the range:
        [ current_time , current_time + 14 days ).
-       
+
     Returns:
         bool: True if valid, False otherwise.
     """
     if not dt_str:
         return False
-    
+
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
     except ValueError:
@@ -236,6 +242,7 @@ def validate_schedule_post_time(dt_str: str | None) -> bool:
     now = datetime.now().replace(second=0, microsecond=0)
     upper_bound = now + timedelta(days=14)
     return now <= dt < upper_bound
+
 
 def _format_cover_click_rate(value: Any) -> str:
     """Format cover click rate as percentage text."""
@@ -258,26 +265,30 @@ def _metric_or_dash(note: dict[str, Any], field: str) -> Any:
     return "-" if value is None else value
 
 
-def _map_note_infos_to_content_rows(note_infos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _map_note_infos_to_content_rows(
+    note_infos: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Map note_infos payload to content table rows."""
     rows: list[dict[str, Any]] = []
     for note in note_infos:
-        rows.append({
-            "标题": note.get("title") or "-",
-            "发布时间": _format_post_time(note.get("post_time")),
-            "曝光": _metric_or_dash(note, "imp_count"),
-            "观看": _metric_or_dash(note, "read_count"),
-            "封面点击率": _format_cover_click_rate(note.get("coverClickRate")),
-            "点赞": _metric_or_dash(note, "like_count"),
-            "评论": _metric_or_dash(note, "comment_count"),
-            "收藏": _metric_or_dash(note, "fav_count"),
-            "涨粉": _metric_or_dash(note, "increase_fans_count"),
-            "分享": _metric_or_dash(note, "share_count"),
-            "人均观看时长": _format_view_time_avg(note.get("view_time_avg")),
-            "弹幕": _metric_or_dash(note, "danmaku_count"),
-            "操作": "详情数据",
-            "_id": note.get("id") or "",
-        })
+        rows.append(
+            {
+                "标题": note.get("title") or "-",
+                "发布时间": _format_post_time(note.get("post_time")),
+                "曝光": _metric_or_dash(note, "imp_count"),
+                "观看": _metric_or_dash(note, "read_count"),
+                "封面点击率": _format_cover_click_rate(note.get("coverClickRate")),
+                "点赞": _metric_or_dash(note, "like_count"),
+                "评论": _metric_or_dash(note, "comment_count"),
+                "收藏": _metric_or_dash(note, "fav_count"),
+                "涨粉": _metric_or_dash(note, "increase_fans_count"),
+                "分享": _metric_or_dash(note, "share_count"),
+                "人均观看时长": _format_view_time_avg(note.get("view_time_avg")),
+                "弹幕": _metric_or_dash(note, "danmaku_count"),
+                "操作": "详情数据",
+                "_id": note.get("id") or "",
+            }
+        )
     return rows
 
 
@@ -348,7 +359,12 @@ class XiaohongshuPublisher:
 
     def _looks_like_windows_drive_path(self, file_path: str) -> bool:
         """Return True when the path looks like a Windows drive-letter path."""
-        return len(file_path) >= 3 and file_path[0].isalpha() and file_path[1] == ":" and file_path[2] in ("\\", "/")
+        return (
+            len(file_path) >= 3
+            and file_path[0].isalpha()
+            and file_path[1] == ":"
+            and file_path[2] in ("\\", "/")
+        )
 
     def _looks_like_unc_path(self, file_path: str) -> bool:
         """Return True when the path looks like a UNC path."""
@@ -495,15 +511,20 @@ class XiaohongshuPublisher:
                 resp = requests.get(
                     url,
                     timeout=5,
-                    proxies={"http": None, "https": None} if _is_local_host(self.host) else None,
+                    proxies={"http": None, "https": None}
+                    if _is_local_host(self.host)
+                    else None,
                 )
                 resp.raise_for_status()
                 return resp.json()
             except Exception as e:
                 if attempt == 0:
                     if _is_local_host(self.host):
-                        print(f"[cdp_publish] CDP connection failed ({e}), restarting Chrome...")
+                        print(
+                            f"[cdp_publish] CDP connection failed ({e}), restarting Chrome..."
+                        )
                         from chrome_launcher import ensure_chrome
+
                         ensure_chrome(port=self.port)
                     else:
                         print(
@@ -512,7 +533,9 @@ class XiaohongshuPublisher:
                         )
                     self._sleep(2, minimum_seconds=1.0)
                 else:
-                    raise CDPError(f"Cannot reach Chrome on {self.host}:{self.port}: {e}")
+                    raise CDPError(
+                        f"Cannot reach Chrome on {self.host}:{self.port}: {e}"
+                    )
 
     def _find_or_create_tab(
         self,
@@ -528,7 +551,8 @@ class XiaohongshuPublisher:
         """
         targets = self._get_targets()
         pages = [
-            t for t in targets
+            t
+            for t in targets
             if t.get("type") == "page" and t.get("webSocketDebuggerUrl")
         ]
 
@@ -540,8 +564,7 @@ class XiaohongshuPublisher:
         if reuse_existing_tab and pages:
             url = pages[0].get("url", "")
             print(
-                "[cdp_publish] Reusing existing tab to reduce focus switching: "
-                f"{url}"
+                f"[cdp_publish] Reusing existing tab to reduce focus switching: {url}"
             )
             return pages[0]["webSocketDebuggerUrl"]
 
@@ -549,7 +572,9 @@ class XiaohongshuPublisher:
         resp = requests.put(
             f"http://{self.host}:{self.port}/json/new?{XHS_CREATOR_URL}",
             timeout=5,
-            proxies={"http": None, "https": None} if _is_local_host(self.host) else None,
+            proxies={"http": None, "https": None}
+            if _is_local_host(self.host)
+            else None,
         )
         if resp.ok:
             ws_url = resp.json().get("webSocketDebuggerUrl", "")
@@ -622,7 +647,9 @@ class XiaohongshuPublisher:
                     f"after {timeout:.1f}s."
                 ) from exc
             except Exception as exc:
-                raise CDPError(f"CDP receive failed while waiting for {method}: {exc}") from exc
+                raise CDPError(
+                    f"CDP receive failed while waiting for {method}: {exc}"
+                ) from exc
 
             try:
                 data = json.loads(raw)
@@ -811,7 +838,9 @@ class XiaohongshuPublisher:
                 "Please open data-analysis page manually and retry."
             )
 
-        body_result = self._send("Network.getResponseBody", {"requestId": target_request_id})
+        body_result = self._send(
+            "Network.getResponseBody", {"requestId": target_request_id}
+        )
         body_text = body_result.get("body", "")
         if body_result.get("base64Encoded"):
             body_text = base64.b64decode(body_text).decode("utf-8", errors="replace")
@@ -838,11 +867,14 @@ class XiaohongshuPublisher:
 
     def _evaluate(self, expression: str) -> Any:
         """Execute JavaScript in the page and return the result value."""
-        result = self._send("Runtime.evaluate", {
-            "expression": expression,
-            "returnByValue": True,
-            "awaitPromise": True,
-        })
+        result = self._send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": True,
+            },
+        )
         remote_obj = result.get("result", {})
         if remote_obj.get("subtype") == "error":
             raise CDPError(f"JS error: {remote_obj.get('description', remote_obj)}")
@@ -990,14 +1022,20 @@ class XiaohongshuPublisher:
         self._send("Network.enable")
         self._send("Network.clearBrowserCookies")
         # Also clear storage
-        self._send("Storage.clearDataForOrigin", {
-            "origin": "https://www.xiaohongshu.com",
-            "storageTypes": "cookies,local_storage,session_storage",
-        })
-        self._send("Storage.clearDataForOrigin", {
-            "origin": "https://creator.xiaohongshu.com",
-            "storageTypes": "cookies,local_storage,session_storage",
-        })
+        self._send(
+            "Storage.clearDataForOrigin",
+            {
+                "origin": "https://www.xiaohongshu.com",
+                "storageTypes": "cookies,local_storage,session_storage",
+            },
+        )
+        self._send(
+            "Storage.clearDataForOrigin",
+            {
+                "origin": "https://creator.xiaohongshu.com",
+                "storageTypes": "cookies,local_storage,session_storage",
+            },
+        )
         self._clear_login_cache()
         print("[cdp_publish] Cookies and storage cleared.")
 
@@ -1019,6 +1057,30 @@ class XiaohongshuPublisher:
             "\n[cdp_publish] Login page is open.\n"
             "  Please scan the QR code in the Chrome window to log in.\n"
         )
+
+    # [v0.2] wait for QR login to complete by watching URL redirect
+    def wait_for_login(self, timeout: int = 120):
+        """Open login page and wait for QR scan to complete.
+
+        After the user scans the QR code, the browser automatically
+        redirects away from the login page.  We poll until the URL
+        no longer contains "login", or *timeout* seconds pass.
+
+        Returns:
+            True when login succeeded, False on timeout.
+        """
+        self.open_login_page()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self._sleep(2.0, minimum_seconds=1.0)
+            url = self._evaluate("window.location.href")
+            if "login" not in url.lower():
+                self._set_login_cache("creator", logged_in=True)
+                self._set_login_cache("home", logged_in=True)
+                print("[cdp_publish] Login redirect detected — logged in.")
+                return True
+        print("[cdp_publish] Login wait timed out.", file=sys.stderr)
+        return False
 
     def _capture_clip_png_base64(self, rect: dict[str, Any], padding: int = 8) -> str:
         """Capture a clipped PNG screenshot and return base64 payload."""
@@ -1101,7 +1163,11 @@ class XiaohongshuPublisher:
                 return { ok: false, reason: "qrcode_not_found" };
             })()
         """)
-        return result if isinstance(result, dict) else {"ok": False, "reason": "unexpected_result"}
+        return (
+            result
+            if isinstance(result, dict)
+            else {"ok": False, "reason": "unexpected_result"}
+        )
 
     def get_login_qrcode(self, wait_seconds: float = 20.0) -> dict[str, Any]:
         """Open login page and return QR code image payload for remote display."""
@@ -1135,13 +1201,21 @@ class XiaohongshuPublisher:
             self._sleep(0.6, minimum_seconds=0.2)
 
         if not qrcode_meta or not qrcode_meta.get("ok"):
-            reason = qrcode_meta.get("reason", "qrcode_not_found") if isinstance(qrcode_meta, dict) else "qrcode_not_found"
+            reason = (
+                qrcode_meta.get("reason", "qrcode_not_found")
+                if isinstance(qrcode_meta, dict)
+                else "qrcode_not_found"
+            )
             raise CDPError(f"Failed to locate login QR code: {reason}")
 
         data_url = qrcode_meta.get("data_url")
         if isinstance(data_url, str) and data_url.startswith("data:image/"):
             header, _, encoded = data_url.partition(",")
-            mime_type = header[5:].split(";", 1)[0] if header.startswith("data:") else "image/png"
+            mime_type = (
+                header[5:].split(";", 1)[0]
+                if header.startswith("data:")
+                else "image/png"
+            )
             image_base64 = encoded
             qrcode_data_url = data_url
         else:
@@ -1406,7 +1480,11 @@ class XiaohongshuPublisher:
 
         target = exact_match or fallback_match
         if not target:
-            return {"ok": False, "reason": "recommend_request_timeout", "suggestions": []}
+            return {
+                "ok": False,
+                "reason": "recommend_request_timeout",
+                "suggestions": [],
+            }
 
         request_id, request_url = target
         body_result = self._send("Network.getResponseBody", {"requestId": request_id})
@@ -1419,7 +1497,11 @@ class XiaohongshuPublisher:
         except json.JSONDecodeError:
             return {"ok": False, "reason": "recommend_invalid_json", "suggestions": []}
         if not isinstance(payload, dict):
-            return {"ok": False, "reason": "recommend_invalid_payload", "suggestions": []}
+            return {
+                "ok": False,
+                "reason": "recommend_invalid_payload",
+                "suggestions": [],
+            }
 
         suggestions = self._extract_recommend_keywords_from_payload(
             payload=payload,
@@ -1465,7 +1547,9 @@ class XiaohongshuPublisher:
             click_mouse=self._click_mouse,
         )
 
-        recommendation_result = self._capture_search_recommendations_via_network(keyword=keyword)
+        recommendation_result = self._capture_search_recommendations_via_network(
+            keyword=keyword
+        )
         recommended_keywords = recommendation_result.get("suggestions", [])
 
         if not recommendation_result.get("ok"):
@@ -1626,14 +1710,18 @@ class XiaohongshuPublisher:
                 };
             })()
         """)
-        return result if isinstance(result, dict) else {
-            "parent_comment_count": 0,
-            "total_comments": 0,
-            "no_comments": False,
-            "end_detected": False,
-            "end_text": "",
-            "scroll_top": 0,
-        }
+        return (
+            result
+            if isinstance(result, dict)
+            else {
+                "parent_comment_count": 0,
+                "total_comments": 0,
+                "no_comments": False,
+                "end_detected": False,
+                "end_text": "",
+                "scroll_top": 0,
+            }
+        )
 
     def _scroll_feed_comments_area(
         self,
@@ -1690,7 +1778,14 @@ class XiaohongshuPublisher:
                     return true;
                 }})()
             """)
-            self._sleep(0.45 if speed_key == "fast" else 0.75 if speed_key == "normal" else 1.05, minimum_seconds=0.15)
+            self._sleep(
+                0.45
+                if speed_key == "fast"
+                else 0.75
+                if speed_key == "normal"
+                else 1.05,
+                minimum_seconds=0.15,
+            )
 
     def _click_more_reply_buttons(
         self,
@@ -1836,7 +1931,9 @@ class XiaohongshuPublisher:
                 skipped_total += click_result["skipped"]
                 if click_result["clicked"] > 0:
                     self._sleep(0.9, minimum_seconds=0.25)
-                    click_result_round2 = self._click_more_reply_buttons(reply_limit=reply_limit)
+                    click_result_round2 = self._click_more_reply_buttons(
+                        reply_limit=reply_limit
+                    )
                     clicked_total += click_result_round2["clicked"]
                     skipped_total += click_result_round2["skipped"]
                     if click_result_round2["clicked"] > 0:
@@ -1844,7 +1941,9 @@ class XiaohongshuPublisher:
 
             large_mode = stagnant_checks >= 3
             push_count = 3 if large_mode else 1
-            self._scroll_feed_comments_area(speed=speed, large_mode=large_mode, push_count=push_count)
+            self._scroll_feed_comments_area(
+                speed=speed, large_mode=large_mode, push_count=push_count
+            )
             state_after = self._extract_feed_comments_state()
             updated_count = int(state_after.get("parent_comment_count", 0) or 0)
             if updated_count > last_count:
@@ -1853,7 +1952,9 @@ class XiaohongshuPublisher:
             else:
                 stagnant_checks += 1
                 if stagnant_checks >= 6:
-                    self._scroll_feed_comments_area(speed=speed, large_mode=True, push_count=6)
+                    self._scroll_feed_comments_area(
+                        speed=speed, large_mode=True, push_count=6
+                    )
                     self._sleep(1.0, minimum_seconds=0.25)
                     stagnant_checks = 0
 
@@ -1868,7 +1969,9 @@ class XiaohongshuPublisher:
         return {
             "attempts": attempts,
             "target_limit": target_limit,
-            "loaded_parent_comments": int(final_state.get("parent_comment_count", 0) or 0),
+            "loaded_parent_comments": int(
+                final_state.get("parent_comment_count", 0) or 0
+            ),
             "total_comments": int(final_state.get("total_comments", 0) or 0),
             "clicked_more_replies": clicked_total,
             "skipped_more_replies": skipped_total,
@@ -2225,7 +2328,9 @@ class XiaohongshuPublisher:
         """Find a comment target and click its reply control."""
         id_literal = json.dumps((comment_id or "").strip(), ensure_ascii=False)
         author_literal = json.dumps((comment_author or "").strip(), ensure_ascii=False)
-        snippet_literal = json.dumps((comment_snippet or "").strip(), ensure_ascii=False)
+        snippet_literal = json.dumps(
+            (comment_snippet or "").strip(), ensure_ascii=False
+        )
 
         script = """
             (() => {
@@ -2377,8 +2482,7 @@ class XiaohongshuPublisher:
             })()
         """
         result = self._evaluate(
-            script
-            .replace("__TARGET_ID__", id_literal)
+            script.replace("__TARGET_ID__", id_literal)
             .replace("__TARGET_AUTHOR__", author_literal)
             .replace("__TARGET_SNIPPET__", snippet_literal)
         )
@@ -2588,8 +2692,7 @@ class XiaohongshuPublisher:
             })()
         """
         result = self._evaluate(
-            script
-            .replace("__SELECTORS__", selectors_literal)
+            script.replace("__SELECTORS__", selectors_literal)
             .replace("__DESIRED__", desired_literal)
             .replace("__CLASS_KEYWORDS__", class_keywords_literal)
             .replace("__TEXT_KEYWORDS__", text_keywords_literal)
@@ -2737,7 +2840,13 @@ class XiaohongshuPublisher:
                 "[data-testid*='bookmark']",
             ],
             desired_active=bookmarked,
-            active_class_keywords=["collected", "bookmarked", "active", "on", "selected"],
+            active_class_keywords=[
+                "collected",
+                "bookmarked",
+                "active",
+                "on",
+                "selected",
+            ],
             active_text_keywords=["已收藏", "取消收藏"],
         )
         return {
@@ -2890,7 +2999,9 @@ class XiaohongshuPublisher:
 
         return int(result.get("length", 0))
 
-    def post_comment_to_feed(self, feed_id: str, xsec_token: str, content: str) -> dict[str, Any]:
+    def post_comment_to_feed(
+        self, feed_id: str, xsec_token: str, content: str
+    ) -> dict[str, Any]:
         """
         Post a top-level comment to a feed detail page.
         """
@@ -3130,7 +3241,8 @@ class XiaohongshuPublisher:
                     break
 
         return {
-            "request_url": result.get("url") or (
+            "request_url": result.get("url")
+            or (
                 "https://edith.xiaohongshu.com/api/sns/web/v1/you/mentions?num=20&cursor="
             ),
             "count": len(items),
@@ -3222,7 +3334,9 @@ class XiaohongshuPublisher:
                 "Please open notification page manually and retry."
             )
 
-        body_result = self._send("Network.getResponseBody", {"requestId": target_request_id})
+        body_result = self._send(
+            "Network.getResponseBody", {"requestId": target_request_id}
+        )
         body_text = body_result.get("body", "")
         if body_result.get("base64Encoded"):
             body_text = base64.b64decode(body_text).decode("utf-8", errors="replace")
@@ -3295,6 +3409,274 @@ class XiaohongshuPublisher:
                 note_type=note_type,
             )
 
+    # [v0.2] fetch current user profile via creator API
+    def get_profile(self):
+        """Fetch logged-in user profile from creator center API.
+
+        Uses page-context fetch() to call XHS_CREATOR_PROFILE_API_PATH
+        with the browser's authenticated session.
+        Returns a dict with user_id, user_name, user_avatar, user_desc,
+        red_id, zone, phone or None on failure.
+        """
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+
+        # Ensure we are on a creator page (for auth context)
+        self._navigate(XHS_CREATOR_LOGIN_CHECK_URL)
+        self._sleep(2.0, minimum_seconds=1.0)
+
+        result = self._evaluate(f"""
+            (async () => {{
+                try {{
+                    const response = await fetch({json.dumps(XHS_CREATOR_PROFILE_API_PATH)}, {{
+                        method: "GET",
+                        credentials: "include",
+                        cache: "no-store",
+                        headers: {{"Accept": "application/json, text/plain, */*"}}
+                    }});
+                    const body = await response.text();
+                    return {{ok: response.ok, status: response.status, body}};
+                }} catch (error) {{
+                    return {{ok: false, error: String(error), body: ""}};
+                }}
+            }})()
+        """)
+        if not isinstance(result, dict) or not result.get("ok"):
+            print(f"[cdp_publish] Profile API failed: {result}", file=sys.stderr)
+            return None
+
+        try:
+            payload = json.loads(result.get("body", "{}"))
+        except json.JSONDecodeError:
+            print("[cdp_publish] Profile API: invalid JSON", file=sys.stderr)
+            return None
+
+        data = payload.get("data") or payload
+        if isinstance(data, dict):
+            return {
+                "user_id": str(data.get("user_id") or data.get("userId") or data.get("id", "")),
+                "user_name": str(data.get("user_name") or data.get("userName") or data.get("nickname", "")),
+                "user_avatar": str(data.get("user_avatar") or data.get("userAvatar") or data.get("avatar", "")),
+                "user_desc": str(data.get("user_desc") or data.get("userDesc") or data.get("desc", "")),
+                "red_id": str(data.get("red_id") or data.get("redId") or ""),
+                "zone": str(data.get("zone") or ""),
+                "phone": str(data.get("phone") or ""),
+            }
+        return None
+
+    # [v0.2] KPI: account overview (/statistics/account/v2 + /statistics/fans-data)
+    def get_account_kpi(self, period: str = "7d") -> dict[str, Any]:
+        """Collect account-level KPI data for one period (7d or 30d).
+
+        Pages: account/v2 (4 sub-tabs) + fans-data.
+        Returns a dict with flattened KPI key-value pairs.
+        """
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+        period_label = "近7日" if period == "7d" else "近30日"
+        period_alt = "近7天" if period == "7d" else "近30天"
+
+        result: dict[str, Any] = {"period": period}
+
+        # --- Account overview: /statistics/account/v2 ---
+        self._navigate(XHS_CREATOR_STAT_ACCOUNT_URL)
+        self._sleep(5.0, minimum_seconds=3.0)
+
+        # Toggle to target period
+        self._evaluate(
+            r"""(function(){
+            var els=document.querySelectorAll('.d-segment-item');
+            for(var i=0;i<els.length;i++){
+                if(els[i].textContent.trim()==='"""
+            + period_label
+            + """'){els[i].click();break;}
+            }
+        })()"""
+        )
+        self._sleep(2.0, minimum_seconds=1.0)
+
+        sub_tabs = ["观看数据", "互动数据", "涨粉数据", "发布数据"]
+        account_kpis: dict[str, dict[str, str]] = {}
+
+        for tab in sub_tabs:
+            # Click sub-tab
+            self._evaluate(
+                r"""(function(){
+                var h=document.querySelector('.d-tabs-headers');
+                if(!h)return;
+                var els=h.querySelectorAll('*');
+                for(var i=0;i<els.length;i++){
+                    if(els[i].textContent.trim()==='"""
+                + tab
+                + """'){els[i].click();break;}
+                }
+            })()"""
+            )
+            self._sleep(2.0, minimum_seconds=1.0)
+
+            # Extract KPI blocks
+            tab_kpis = self._evaluate(r"""(function(){
+                var result={};
+                var blocks=document.querySelectorAll('.creator-block');
+                for(var i=0;i<blocks.length;i++){
+                    var b=blocks[i];
+                    var label=b.querySelector('[class*="label"], [class*="name"], [class*="title"]');
+                    var value=b.querySelector('[class*="value"], [class*="number"], [class*="count"]');
+                    if(label&&value){
+                        var k=label.textContent.trim();
+                        var v=value.textContent.trim().replace(/[,%\s]/g,'');
+                        if(k.length>=2&&k.length<=10)result[k]=v;
+                    }
+                }
+                if(Object.keys(result).length===0){
+                    var t=document.body.textContent||'';
+                    var idx=t.indexOf('data_total_view');
+                    idx=idx>=0?idx:t.indexOf('data total');
+                    var s=idx>=0?t.slice(idx,idx+800):t;
+                    var re=/([一-龥]{2,8})\s*([\d,.]+)\s*(%|秒|小时)?/g;
+                    var m;
+                    while((m=re.exec(s))!==null){
+                        var n=m[1],v=m[2].replace(/,/g,''),u=m[3]||'';
+                        result[n+(u==='%'?'_pct':u==='秒'?'_sec':u==='小时'?'_hour':'')]=v;
+                    }
+                }
+                return result;
+            })()""")
+            if tab_kpis and isinstance(tab_kpis, dict):
+                account_kpis[tab] = tab_kpis
+
+        result["account_overview"] = account_kpis
+
+        # --- Fans data: /statistics/fans-data ---
+        self._navigate(XHS_CREATOR_STAT_FANS_URL)
+        self._sleep(5.0, minimum_seconds=3.0)
+
+        # Toggle to target period
+        self._evaluate(
+            r"""(function(){
+            var els=document.querySelectorAll('.select-item-default');
+            for(var i=0;i<els.length;i++){
+                var t=els[i].textContent.trim();
+                if(t==='"""
+            + period_label
+            + """'||t==='"""
+            + period_alt
+            + """'){els[i].click();break;}
+            }
+        })()"""
+        )
+        self._sleep(2.0, minimum_seconds=1.0)
+
+        fans_data = self._evaluate(r"""(function(){
+            var result={};
+            var blocks=document.querySelectorAll('.block-container');
+            for(var i=0;i<blocks.length;i++){
+                var t=blocks[i].textContent.replace(/\s+/g,' ').trim();
+                var m=t.match(/(total_followers|new_followers|lost_followers|总粉丝数|新增粉丝数|流失粉丝数)\s*([\d,]+)/);
+                if(m){
+                    var key=m[1];
+                    if(key==='总粉丝数')key='total_followers';
+                    else if(key==='新增粉丝数')key='new_followers';
+                    else if(key==='流失粉丝数')key='lost_followers';
+                    result[key]=parseInt(m[2].replace(/,/g,''));
+                }
+            }
+            var gender=document.querySelector('.gender-legend');
+            if(gender){
+                var gt=gender.textContent||'';
+                var mm=gt.match(/男性\s*([\d.]+)%/);
+                var fm=gt.match(/女性\s*([\d.]+)%/);
+                if(mm)result.male_pct=parseFloat(mm[1]);
+                if(fm)result.female_pct=parseFloat(fm[1]);
+            }
+            return result;
+        })()""")
+        if fans_data and isinstance(fans_data, dict):
+            result["fans_overview"] = fans_data
+
+        return result
+
+    # [v0.2] KPI: note manager page (/new/note-manager, lazy-load all notes)
+    def get_note_manager_kpi(self) -> dict[str, Any]:
+        """Collect all historical notes with 5 basic KPIs from note manager page.
+
+        Uses .content scroll for lazy-loading, .note-card for extraction.
+        Returns a dict with 'total' and 'notes' list.
+        """
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+
+        self._navigate(XHS_CREATOR_NOTE_MANAGER_URL)
+        self._sleep(5.0, minimum_seconds=3.0)
+
+        # Get total from "全部{total}" tab
+        total = self._evaluate(r"""(function(){
+            var el=document.querySelector('.tab-item--active');
+            if(!el)return 0;
+            var m=el.textContent.match(/(\d+)/);
+            return m?parseInt(m[1]):0;
+        })()""")
+        if not isinstance(total, (int, float)) or total <= 0:
+            return {"total": 0, "notes": []}
+
+        total = int(total)
+        print(f"[cdp_publish] note-manager total: {total}")
+
+        # Scroll .content until all loaded
+        last = 0
+        for _ in range(30):
+            self._evaluate(r"""(function(){
+                var c=document.querySelector('.content');
+                if(c)c.scrollTop=c.scrollHeight;
+            })()""")
+            self._sleep(2.0, minimum_seconds=1.0)
+            current = self._evaluate("document.querySelectorAll('.note-card').length")
+            if (
+                isinstance(current, (int, float))
+                and int(current) == last
+                and int(current) >= total
+            ):
+                break
+            last = int(current) if isinstance(current, (int, float)) else 0
+            print(f"[cdp_publish] note-manager scroll: {last}/{total}")
+
+        # Extract each .note-card
+        notes = self._evaluate(r"""(function(){
+            var notes=[];
+            var cards=document.querySelectorAll('.note-card');
+            for(var i=0;i<cards.length;i++){
+                var card=cards[i];
+                var noteId='';
+                try{
+                    var imp=card.getAttribute('data-impression')||'';
+                    var d=JSON.parse(imp);
+                    noteId=(d.noteTarget&&d.noteTarget.value&&d.noteTarget.value.noteId)||'';
+                }catch(e){}
+                var titleEl=card.querySelector('.note-card__title');
+                var title=titleEl?titleEl.textContent.trim():'';
+                var text=card.textContent||'';
+                var dm=text.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/);
+                var publishTime=dm?dm[1]:'';
+                var stats=card.querySelectorAll('.note-card__stat');
+                if(stats.length===5&&title&&publishTime){
+                    notes.push({
+                        note_id:noteId,title:title,publish_time:publishTime,
+                        read_count:parseInt((stats[0].textContent||'0').replace(/[,\s]/g,''))||0,
+                        comment_count:parseInt((stats[1].textContent||'0').replace(/[,\s]/g,''))||0,
+                        like_count:parseInt((stats[2].textContent||'0').replace(/[,\s]/g,''))||0,
+                        fav_count:parseInt((stats[3].textContent||'0').replace(/[,\s]/g,''))||0,
+                        share_count:parseInt((stats[4].textContent||'0').replace(/[,\s]/g,''))||0,
+                    });
+                }
+            }
+            return notes;
+        })()""")
+        return {
+            "total": total,
+            "count": len(notes) if isinstance(notes, list) else 0,
+            "notes": notes if isinstance(notes, list) else [],
+        }
+
     # ------------------------------------------------------------------
     # Publishing actions
     # ------------------------------------------------------------------
@@ -3304,10 +3686,13 @@ class XiaohongshuPublisher:
         self._send("DOM.enable")
         doc = self._send("DOM.getDocument")
         root_id = doc["root"]["nodeId"]
-        result = self._send("DOM.querySelector", {
-            "nodeId": root_id,
-            "selector": selector,
-        })
+        result = self._send(
+            "DOM.querySelector",
+            {
+                "nodeId": root_id,
+                "selector": selector,
+            },
+        )
         return int(result.get("nodeId", 0) or 0)
 
     def _count_uploaded_images(self) -> int:
@@ -3331,7 +3716,9 @@ class XiaohongshuPublisher:
         """)
         return int(count or 0)
 
-    def _wait_for_uploaded_images(self, expected_count: int, timeout_seconds: float = 60.0):
+    def _wait_for_uploaded_images(
+        self, expected_count: int, timeout_seconds: float = 60.0
+    ):
         """Wait until image preview count reaches the expected value."""
         deadline = time.time() + max(5.0, float(timeout_seconds))
         last_count = -1
@@ -3470,7 +3857,9 @@ class XiaohongshuPublisher:
         """)
         return bool(ready)
 
-    def _wait_for_publish_button_ready(self, timeout_seconds: float = VIDEO_PROCESS_TIMEOUT):
+    def _wait_for_publish_button_ready(
+        self, timeout_seconds: float = VIDEO_PROCESS_TIMEOUT
+    ):
         """Wait until the publish button becomes interactive."""
         deadline = time.time() + max(5.0, float(timeout_seconds))
         while time.time() < deadline:
@@ -3486,9 +3875,7 @@ class XiaohongshuPublisher:
     def _click_tab(self, tab_selector: str, tab_text: str):
         """Click a publish-mode tab by selector and text content."""
         print(f"[cdp_publish] Clicking '{tab_text}' tab...")
-        selector_alt = (
-            "div.creator-tab, .creator-tab, [class*='creator-tab'], [role='tab'], button, div"
-        )
+        selector_alt = "div.creator-tab, .creator-tab, [class*='creator-tab'], [role='tab'], button, div"
         selector_alt_literal = json.dumps(selector_alt)
         tab_text_literal = json.dumps(tab_text)
 
@@ -3560,8 +3947,7 @@ class XiaohongshuPublisher:
                     return
 
             raise CDPError(
-                f"Could not find '{tab_text}' tab. "
-                "The page structure may have changed."
+                f"Could not find '{tab_text}' tab. The page structure may have changed."
             )
 
         print(f"[cdp_publish] Tab '{tab_text}' clicked, waiting for upload area...")
@@ -3581,14 +3967,20 @@ class XiaohongshuPublisher:
             print("[cdp_publish] No images to upload, skipping.")
             return
 
-        preserve_flags = [self._should_preserve_upload_path(path) for path in image_paths]
+        preserve_flags = [
+            self._should_preserve_upload_path(path) for path in image_paths
+        ]
         prepared_paths = [self._prepare_upload_file_path(path) for path in image_paths]
 
         print(f"[cdp_publish] Uploading {len(image_paths)} image(s)...")
         if self.preserve_upload_paths:
-            print("[cdp_publish] Upload path normalization disabled; preserving original paths.")
+            print(
+                "[cdp_publish] Upload path normalization disabled; preserving original paths."
+            )
         elif any(preserve_flags):
-            print("[cdp_publish] Auto-detected Windows/UNC upload paths; preserving original paths.")
+            print(
+                "[cdp_publish] Auto-detected Windows/UNC upload paths; preserving original paths."
+            )
 
         for index, file_path in enumerate(prepared_paths, start=1):
             node_id = 0
@@ -3608,11 +4000,16 @@ class XiaohongshuPublisher:
                     "The page structure may have changed. Check references/publish-workflow.md."
                 )
 
-            self._send("DOM.setFileInputFiles", {
-                "nodeId": node_id,
-                "files": [file_path],
-            })
-            print(f"[cdp_publish] Image {index}/{len(prepared_paths)} submitted: {file_path}")
+            self._send(
+                "DOM.setFileInputFiles",
+                {
+                    "nodeId": node_id,
+                    "files": [file_path],
+                },
+            )
+            print(
+                f"[cdp_publish] Image {index}/{len(prepared_paths)} submitted: {file_path}"
+            )
             self._wait_for_uploaded_images(index)
             self._sleep(0.9, minimum_seconds=0.25)
 
@@ -3625,9 +4022,13 @@ class XiaohongshuPublisher:
         prepared_path = self._prepare_upload_file_path(video_path)
         print(f"[cdp_publish] Uploading video: {prepared_path}")
         if self.preserve_upload_paths:
-            print("[cdp_publish] Upload path normalization disabled; preserving original paths.")
+            print(
+                "[cdp_publish] Upload path normalization disabled; preserving original paths."
+            )
         elif preserve_path:
-            print("[cdp_publish] Auto-detected Windows/UNC upload path; preserving original path.")
+            print(
+                "[cdp_publish] Auto-detected Windows/UNC upload path; preserving original path."
+            )
 
         node_id = 0
         for selector in (SELECTORS["upload_input"], SELECTORS["upload_input_alt"]):
@@ -3642,10 +4043,13 @@ class XiaohongshuPublisher:
             )
 
         # Set the video file
-        self._send("DOM.setFileInputFiles", {
-            "nodeId": node_id,
-            "files": [prepared_path],
-        })
+        self._send(
+            "DOM.setFileInputFiles",
+            {
+                "nodeId": node_id,
+                "files": [prepared_path],
+            },
+        )
 
         print("[cdp_publish] Video file submitted. Waiting for processing...")
 
@@ -3663,12 +4067,15 @@ class XiaohongshuPublisher:
 
         while time.time() < deadline:
             if self._is_publish_button_ready():
-                print("[cdp_publish] Video processing complete - publish button is ready.")
+                print(
+                    "[cdp_publish] Video processing complete - publish button is ready."
+                )
                 self._sleep(1.0, minimum_seconds=0.25)
                 return
 
             # Try to read progress text for user feedback
-            pct = self._evaluate("""
+            pct = (
+                self._evaluate("""
                 (function() {
                     // Look for progress percentage text
                     var els = document.querySelectorAll(
@@ -3680,7 +4087,9 @@ class XiaohongshuPublisher:
                     }
                     return '';
                 })()
-            """) or ""
+            """)
+                or ""
+            )
             if pct and pct != last_pct:
                 print(f"[cdp_publish] Video processing: {pct}")
                 last_pct = pct
@@ -3795,7 +4204,7 @@ class XiaohongshuPublisher:
         """Set schedle publish time if necessary"""
         if post_time == None:
             return
-        
+
         print(f"[cdp_publish] Setting schedule publish time: {post_time}")
         self._sleep(ACTION_INTERVAL, minimum_seconds=0.25)
 
@@ -3821,7 +4230,7 @@ class XiaohongshuPublisher:
                         switchElement.click();
                         await sleep(300);
                     }}
-                    
+
                     // Set publish time
                     const el = document.querySelector({json.dumps(SELECTORS["schedule_datetime_input"])});
                     if (!(el instanceof HTMLInputElement)) {{
@@ -3843,9 +4252,11 @@ class XiaohongshuPublisher:
             }})();
         """)
 
-        if not post_time_enabled == 'ok':
-            raise CDPError("Could not set scheduled publish time. Reason:" + post_time_enabled)
-        
+        if not post_time_enabled == "ok":
+            raise CDPError(
+                "Could not set scheduled publish time. Reason:" + post_time_enabled
+            )
+
         print("[cdp_publish] Schedule publish time set.")
         return
 
@@ -3923,22 +4334,28 @@ class XiaohongshuPublisher:
 
     def _move_mouse(self, x: float, y: float):
         """Move mouse cursor via CDP to support hover-driven UI."""
-        self._send("Input.dispatchMouseEvent", {
-            "type": "mouseMoved",
-            "x": float(x),
-            "y": float(y),
-        })
+        self._send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseMoved",
+                "x": float(x),
+                "y": float(y),
+            },
+        )
 
     def _click_mouse(self, x: float, y: float):
         """Perform a real left-click via CDP at the given coordinates."""
         for event_type in ("mousePressed", "mouseReleased"):
-            self._send("Input.dispatchMouseEvent", {
-                "type": event_type,
-                "x": float(x),
-                "y": float(y),
-                "button": "left",
-                "clickCount": 1,
-            })
+            self._send(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": event_type,
+                    "x": float(x),
+                    "y": float(y),
+                    "button": "left",
+                    "clickCount": 1,
+                },
+            )
             time.sleep(0.05)
 
     def _click_element_by_cdp(self, description: str, js_get_rect: str):
@@ -3966,13 +4383,16 @@ class XiaohongshuPublisher:
 
         # Dispatch a full mouse click sequence via CDP
         for event_type in ("mousePressed", "mouseReleased"):
-            self._send("Input.dispatchMouseEvent", {
-                "type": event_type,
-                "x": cx,
-                "y": cy,
-                "button": "left",
-                "clickCount": 1,
-            })
+            self._send(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": event_type,
+                    "x": cx,
+                    "y": cy,
+                    "button": "left",
+                    "clickCount": 1,
+                },
+            )
             time.sleep(0.05)
 
     def _click_publish(self, scheduled: bool = False):
@@ -4044,7 +4464,7 @@ class XiaohongshuPublisher:
 
         if not image_paths:
             raise CDPError("At least one image is required to publish on Xiaohongshu.")
-        
+
         if post_time and not validate_schedule_post_time(post_time):
             raise CDPError(
                 "Scheduled publish time is invalid. "
@@ -4127,8 +4547,10 @@ class XiaohongshuPublisher:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     import argparse
+
     from chrome_launcher import ensure_chrome, restart_chrome
 
     parser = argparse.ArgumentParser(description="Xiaohongshu CDP Publisher")
@@ -4137,11 +4559,18 @@ def main():
         default=CDP_HOST,
         help=f"CDP host (default: {CDP_HOST})",
     )
-    parser.add_argument("--port", type=int, default=CDP_PORT,
-                        help=f"CDP remote debugging port (default: {CDP_PORT})")
-    parser.add_argument("--headless", action="store_true",
-                        help="Use headless Chrome (no GUI window)")
-    parser.add_argument("--account", help="Account name to use (default: default account)")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=CDP_PORT,
+        help=f"CDP remote debugging port (default: {CDP_PORT})",
+    )
+    parser.add_argument(
+        "--headless", action="store_true", help="Use headless Chrome (no GUI window)"
+    )
+    parser.add_argument(
+        "--account", help="Account name to use (default: default account)"
+    )
     parser.add_argument(
         "--timing-jitter",
         type=float,
@@ -4186,7 +4615,9 @@ def main():
     )
 
     # fill - fill form without clicking publish
-    p_fill = sub.add_parser("fill", help="Fill title/content/images or video without publishing")
+    p_fill = sub.add_parser(
+        "fill", help="Fill title/content/images or video without publishing"
+    )
     p_fill.add_argument("--title", required=True)
     p_fill.add_argument("--content", default=None)
     p_fill.add_argument("--content-file", default=None, help="Read content from file")
@@ -4220,7 +4651,9 @@ def main():
     )
     p_search.add_argument("--keyword", required=True, help="Search keyword")
     p_search.add_argument("--sort-by", choices=SORT_BY_OPTIONS, help="Sort by option")
-    p_search.add_argument("--note-type", choices=NOTE_TYPE_OPTIONS, help="Note type filter")
+    p_search.add_argument(
+        "--note-type", choices=NOTE_TYPE_OPTIONS, help="Note type filter"
+    )
     p_search.add_argument(
         "--publish-time",
         choices=PUBLISH_TIME_OPTIONS,
@@ -4231,7 +4664,9 @@ def main():
         choices=SEARCH_SCOPE_OPTIONS,
         help="Search scope filter",
     )
-    p_search.add_argument("--location", choices=LOCATION_OPTIONS, help="Location filter")
+    p_search.add_argument(
+        "--location", choices=LOCATION_OPTIONS, help="Location filter"
+    )
 
     # get-feed-detail - get note detail by feed id and token
     p_detail = sub.add_parser(
@@ -4280,7 +4715,9 @@ def main():
     p_comment.add_argument("--xsec-token", required=True, help="xsec token")
     p_comment_content = p_comment.add_mutually_exclusive_group(required=True)
     p_comment_content.add_argument("--content", help="Comment content")
-    p_comment_content.add_argument("--content-file", help="Read comment content from file")
+    p_comment_content.add_argument(
+        "--content-file", help="Read comment content from file"
+    )
 
     # respond-comment - reply to an existing comment on feed detail
     p_reply = sub.add_parser(
@@ -4294,8 +4731,12 @@ def main():
     p_reply_content.add_argument("--content", help="Reply content")
     p_reply_content.add_argument("--content-file", help="Read reply content from file")
     p_reply.add_argument("--comment-id", help="Target comment id")
-    p_reply.add_argument("--comment-author", help="Target comment author name (fuzzy match)")
-    p_reply.add_argument("--comment-snippet", help="Target comment text snippet (fuzzy match)")
+    p_reply.add_argument(
+        "--comment-author", help="Target comment author name (fuzzy match)"
+    )
+    p_reply.add_argument(
+        "--comment-snippet", help="Target comment text snippet (fuzzy match)"
+    )
 
     # profile-snapshot - read user profile summary
     p_profile = sub.add_parser(
@@ -4305,7 +4746,9 @@ def main():
     )
     p_profile_target = p_profile.add_mutually_exclusive_group(required=True)
     p_profile_target.add_argument("--profile-url", help="Full profile URL")
-    p_profile_target.add_argument("--user-id", help="User id for profile URL composition")
+    p_profile_target.add_argument(
+        "--user-id", help="User id for profile URL composition"
+    )
 
     # notes-from-profile - list notes from user profile page
     p_profile_notes = sub.add_parser(
@@ -4315,8 +4758,12 @@ def main():
     )
     p_profile_notes_target = p_profile_notes.add_mutually_exclusive_group(required=True)
     p_profile_notes_target.add_argument("--profile-url", help="Full profile URL")
-    p_profile_notes_target.add_argument("--user-id", help="User id for profile URL composition")
-    p_profile_notes.add_argument("--limit", type=int, default=20, help="Max notes to return (default: 20)")
+    p_profile_notes_target.add_argument(
+        "--user-id", help="User id for profile URL composition"
+    )
+    p_profile_notes.add_argument(
+        "--limit", type=int, default=20, help="Max notes to return (default: 20)"
+    )
     p_profile_notes.add_argument(
         "--max-scrolls",
         type=int,
@@ -4401,15 +4848,55 @@ def main():
         help="Optional CSV output path",
     )
 
+    # [v0.2] account-kpi - collect account-level KPI from statistics pages
+    p_account_kpi = sub.add_parser(
+        "account-kpi",
+        aliases=["account_kpi"],
+        help="Collect account-level KPI (account/v2 + fans-data, 7d+30d)",
+    )
+    p_account_kpi.add_argument(
+        "--period",
+        choices=["7d", "30d"],
+        default="7d",
+        help="Statistic period (default: 7d)",
+    )
+
+    # [v0.2] note-manager-kpi - collect all historical notes with 5 basic KPIs
+    sub.add_parser(
+        "note-manager-kpi",
+        aliases=["note_manager_kpi"],
+        help="Collect all historical notes from note-manager page (lazy-load)",
+    )
+
+    # [v0.2] fetch-profile - get current creator profile via API
+    sub.add_parser(
+        "fetch-profile",
+        aliases=["fetch_profile"],
+        help="Fetch logged-in user profile from creator center API",
+    )
+
     # login - open browser for QR code login (always headed)
-    sub.add_parser("login", help="Open browser for QR code login (always headed mode)")
+    # [v0.2] login --wait: open QR page and block until scan completes
+    p_login = sub.add_parser(
+        "login",
+        help="Open browser for QR code login (always headed mode)"
+    )
+    p_login.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait for QR scan to complete (block until logged in)",
+    )
 
     # re-login - clear cookies and re-login the same account (always headed)
-    sub.add_parser("re-login", help="Clear cookies and re-login same account (always headed)")
+    sub.add_parser(
+        "re-login", help="Clear cookies and re-login same account (always headed)"
+    )
 
     # switch-account - clear cookies and open login page (always headed)
-    sub.add_parser("switch-account",
-                   help="Clear cookies and open login page for new account (always headed)")
+    sub.add_parser(
+        "switch-account",
+        help="Clear cookies and open login page for new account (always headed)",
+    )
 
     # list-accounts - list all configured accounts
     sub.add_parser("list-accounts", help="List all configured accounts")
@@ -4422,8 +4909,11 @@ def main():
     # remove-account - remove an account
     p_rm = sub.add_parser("remove-account", help="Remove an account")
     p_rm.add_argument("name", help="Account name to remove")
-    p_rm.add_argument("--delete-profile", action="store_true",
-                      help="Also delete the Chrome profile directory")
+    p_rm.add_argument(
+        "--delete-profile",
+        action="store_true",
+        help="Also delete the Chrome profile directory",
+    )
 
     # set-default-account - set default account
     p_def = sub.add_parser("set-default-account", help="Set the default account")
@@ -4447,6 +4937,7 @@ def main():
     # Account management commands that don't need Chrome
     if args.command == "list-accounts":
         from account_manager import list_accounts
+
         accounts = list_accounts()
         if not accounts:
             print("No accounts configured.")
@@ -4460,6 +4951,7 @@ def main():
 
     elif args.command == "add-account":
         from account_manager import add_account, get_profile_dir
+
         if add_account(args.name, args.alias):
             print(f"Account '{args.name}' added.")
             print(f"Profile dir: {get_profile_dir(args.name)}")
@@ -4472,6 +4964,7 @@ def main():
 
     elif args.command == "remove-account":
         from account_manager import remove_account
+
         if remove_account(args.name, args.delete_profile):
             print(f"Account '{args.name}' removed.")
         else:
@@ -4481,6 +4974,7 @@ def main():
 
     elif args.command == "set-default-account":
         from account_manager import set_default_account
+
         if set_default_account(args.name):
             print(f"Default account set to '{args.name}'.")
         else:
@@ -4503,7 +4997,9 @@ def main():
         )
 
     print(f"[cdp_publish] Timing jitter ratio: {timing_jitter:.2f}")
-    print(f"[cdp_publish] Login cache: enabled (ttl={DEFAULT_LOGIN_CACHE_TTL_HOURS:g}h).")
+    print(
+        f"[cdp_publish] Login cache: enabled (ttl={DEFAULT_LOGIN_CACHE_TTL_HOURS:g}h)."
+    )
     if reuse_existing_tab:
         print("[cdp_publish] Tab selection mode: prefer reusing existing tab.")
 
@@ -4580,7 +5076,9 @@ def main():
                 sys.exit(1)
 
             filters = _build_search_filters_from_args(args)
-            search_result = publisher.search_feeds(keyword=args.keyword, filters=filters)
+            search_result = publisher.search_feeds(
+                keyword=args.keyword, filters=filters
+            )
             feeds = search_result.get("feeds", [])
             recommended_keywords = search_result.get("recommended_keywords", [])
             payload = {
@@ -4755,7 +5253,9 @@ def main():
                 print("NOT_LOGGED_IN")
                 sys.exit(1)
 
-            payload = publisher.get_notification_mentions(wait_seconds=args.wait_seconds)
+            payload = publisher.get_notification_mentions(
+                wait_seconds=args.wait_seconds
+            )
             print("GET_NOTIFICATION_MENTIONS_RESULT:")
             print(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -4780,13 +5280,89 @@ def main():
                 )
                 print(f"CONTENT_DATA_CSV: {csv_path}")
 
-        elif args.command == "login":
-            # Ensure headed mode for QR scanning
-            if local_mode:
-                restart_chrome(port=port, headless=False, account=account)
+        # [v0.2] account-kpi — collect account-level KPI
+        elif args.command in ("account-kpi", "account_kpi"):
             publisher.connect(reuse_existing_tab=reuse_existing_tab)
-            publisher.open_login_page()
-            print("LOGIN_READY")
+            if not publisher.check_login():
+                print("NOT_LOGGED_IN")
+                sys.exit(1)
+
+            payload_7d = publisher.get_account_kpi("7d")
+            payload_30d = publisher.get_account_kpi("30d")
+            note_rows = publisher.get_content_data(page_num=1, page_size=50)
+
+            result = {
+                "account_id": account or "default",
+                "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "type": "account",
+                "account_overview_7d": payload_7d.get("account_overview", {}),
+                "fans_overview_7d": payload_7d.get("fans_overview", {}),
+                "account_overview_30d": payload_30d.get("account_overview", {}),
+                "fans_overview_30d": payload_30d.get("fans_overview", {}),
+                "note_data": note_rows.get("rows", []),
+            }
+            print("ACCOUNT_KPI_RESULT:")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+
+        # [v0.2] note-manager-kpi — collect all historical notes
+        elif args.command in ("note-manager-kpi", "note_manager_kpi"):
+            publisher.connect(reuse_existing_tab=reuse_existing_tab)
+            if not publisher.check_login():
+                print("NOT_LOGGED_IN")
+                sys.exit(1)
+
+            payload = publisher.get_note_manager_kpi()
+            result = {
+                "account_id": account or "default",
+                "collected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "type": "note",
+                "total": payload.get("total", 0),
+                "note_data": payload.get("notes", []),
+            }
+            print("NOTE_MANAGER_KPI_RESULT:")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+
+        # [v0.2] fetch-profile — get current creator profile
+        elif args.command in ("fetch-profile", "fetch_profile"):
+            publisher.connect(reuse_existing_tab=reuse_existing_tab)
+            if not publisher.check_login():
+                print("NOT_LOGGED_IN")
+                sys.exit(1)
+
+            profile = publisher.get_profile()
+            if profile:
+                result = {
+                    "status": "ok",
+                    "profile": profile,
+                }
+            else:
+                result = {
+                    "status": "error",
+                    "message": "Failed to fetch profile from API",
+                }
+            print("FETCH_PROFILE_RESULT:")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if result["status"] == "error":
+                sys.exit(1)
+
+        elif args.command == "login":
+            # [v0.2] Use ensure_chrome (only launch if not running) to avoid
+            #        killing existing tabs.  Headless→headed switch still needs
+            #        restart, but that path is rare with --wait.
+            if local_mode:
+                if headless:
+                    restart_chrome(port=port, headless=False, account=account)
+                else:
+                    ensure_chrome(port=port, headless=False, account=account)
+            publisher.connect(reuse_existing_tab=reuse_existing_tab)
+            if getattr(args, "wait", False):
+                if not publisher.wait_for_login():
+                    print("LOGIN_TIMEOUT")
+                    sys.exit(1)
+                print("LOGIN_SUCCESS")
+            else:
+                publisher.open_login_page()
+                print("LOGIN_READY")
 
         elif args.command == "re-login":
             # Ensure headed mode, clear cookies, re-open login page for same account
