@@ -4422,42 +4422,38 @@ class XiaohongshuPublisher:
             )
             time.sleep(0.05)
 
-    def _click_publish(self, scheduled: bool = False):
-        """Click the publish button inside xhs-publish-btn (closed shadow DOM).
+    # [v0.2] Get red button centre inside xhs-publish-btn (closed shadow DOM)
+    def _get_publish_button_rect_v2(self, x_offset: int = 72):
+        """Compute the centre of the red publish button inside xhs-publish-btn.
 
-        Strategy: the host element <xhs-publish-btn> is a sticky footer at
-        viewport bottom.  Its shadow DOM renders two buttons side by side:
-          .ce-btn.white   — 120×40, left  (暂存离开)
-          .ce-btn.bg-red  — 120×40, right (定时发布 / 发布)
-        The button group is centred (justify-content:center) with 24px gap.
+        The host <xhs-publish-btn> is a sticky footer (90px tall, justify-content:center).
+        Its shadow DOM renders buttons side by side with 24px gap:
+          - 2 buttons (publish page): .ce-btn.white + .ce-btn.bg-red → x_offset=72
+          - 1 button  (update page):  .ce-btn.bg-red centred → x_offset=0
 
-        We get the host's bounding rect and compute the red button's centre
-        from the known CSS layout:
-          red_cx = host_center_x + 72    (half gap 12 + half red btn 60)
-          red_cy = host_top + 45         (half footer height 45)
+        Returns dict {cx, cy} or None if the host element is not found.
         """
-        print("[cdp_publish] Clicking publish button...")
-        self._sleep(ACTION_INTERVAL, minimum_seconds=0.25)
-        self._wait_for_publish_button_ready(timeout_seconds=20.0)
-
-        rect_info = self._evaluate(f"""
+        return self._evaluate(f"""
             (function() {{
                 var host = document.querySelector({json.dumps(SELECTORS["publish_button"])});
                 if (!host) return null;
                 var r = host.getBoundingClientRect();
-                // red button centre = footer centre + 72px right
-                var red_cx = r.left + r.width / 2 + 72;
-                var red_cy = r.top + r.height / 2;
-                return {{ cx: red_cx, cy: red_cy }};
+                return {{ cx: r.left + r.width / 2 + {x_offset}, cy: r.top + r.height / 2 }};
             }})()
         """)
-        if not rect_info:
+
+    def _click_publish(self, scheduled: bool = False):
+        """Click the publish button inside xhs-publish-btn (closed shadow DOM)."""
+        print("[cdp_publish] Clicking publish button...")
+        self._sleep(ACTION_INTERVAL, minimum_seconds=0.25)
+        self._wait_for_publish_button_ready(timeout_seconds=20.0)
+
+        rect = self._get_publish_button_rect_v2(x_offset=72)
+        if not rect:
             raise CDPError("Could not find xhs-publish-btn element.")
 
-        cx = rect_info["cx"]
-        cy = rect_info["cy"]
-        print(f"[cdp_publish] Clicking red button at ({cx:.0f}, {cy:.0f})")
-        self._click_mouse(cx, cy)
+        print(f"[cdp_publish] Clicking red button at ({rect['cx']:.0f}, {rect['cy']:.0f})")
+        self._click_mouse(rect["cx"], rect["cy"])
         print("[cdp_publish] Publish button clicked.")
 
         # Wait for publish success and get note link
@@ -4676,17 +4672,8 @@ class XiaohongshuPublisher:
         print(f"[cdp_publish] Visibility set to: {mode} ({target_text})")
         self._sleep(1.0, minimum_seconds=0.5)
 
-        # Click the red button inside xhs-publish-btn (closed shadow DOM).
-        # Update page has only ONE button (save-draft=false), so it is centred.
-        # red_cx = footer_center_x, red_cy = footer_top + 45
-        rect = self._evaluate(f"""
-            (function() {{
-                var host = document.querySelector({json.dumps(SELECTORS["publish_button"])});
-                if (!host) return null;
-                var r = host.getBoundingClientRect();
-                return {{ cx: r.left + r.width / 2, cy: r.top + r.height / 2 }};
-            }})()
-        """)
+        # Click the red button (single button layout → centred, x_offset=0)
+        rect = self._get_publish_button_rect_v2(x_offset=0)
         if not rect:
             raise CDPError("xhs-publish-btn not found on update page")
         self._click_mouse(rect["cx"], rect["cy"])
