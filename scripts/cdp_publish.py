@@ -99,6 +99,8 @@ CDP_PORT = 9222
 
 # Xiaohongshu URLs
 XHS_CREATOR_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
+# [v0.2] URL for updating published note visibility
+XHS_CREATOR_UPDATE_URL = "https://creator.xiaohongshu.com/publish/update"
 XHS_HOME_URL = "https://www.xiaohongshu.com"
 XHS_NOTIFICATION_URL = "https://www.xiaohongshu.com/notification"
 XHS_CREATOR_LOGIN_CHECK_URL = "https://creator.xiaohongshu.com"
@@ -145,11 +147,24 @@ SELECTORS = {
     "content_editor_alt2": "div.ql-editor",
     "content_placeholder_text": "输入正文描述",
     # Publish button
-    "publish_button": ".publish-page-publish-btn button.bg-red",
+    # [v0.2] xhs-publish-btn is a Vue custom element with CLOSED shadow DOM.
+    #        Its shadow-root contains .publish-page-publish-btn > .ce-btn.bg-red,
+    #        but closed shadow DOM prevents querySelector from reaching inside.
+    #        Clicking the outer xhs-publish-btn element triggers Vue's submit handler.
+    #        Use submit-disabled attribute (not disabled) to check readiness.
+    "publish_button": "xhs-publish-btn",
     "publish_button_text": "发布",
     "schedule_publish_button_text": "定时发布",
+    # [v0.2] schedule selectors — try v2 first, fall back to v1
+    "schedule_switch_v2": ".post-time-switch-container input[type=\"checkbox\"]",
     "schedule_switch": ".post-time-wrapper .d-switch",
+    "schedule_datetime_input_v2": ".date-picker-container input.d-text",
     "schedule_datetime_input": ".date-picker-container input",
+    # [v0.2] publish button (creator center)
+    "publish_btn": ".publish-page-publish-btn .ce-btn.bg-red",
+    # [v0.2] visibility toggle for publish_update
+    "visibility_trigger": ".permission-card-select.custom-select-44",
+    "visibility_dropdown": ".custom-dropdown-44",
     "image_preview_items": ".img-preview-area .pr",
     # Login indicator - URL-based check (redirect to /login if not logged in)
     "login_indicator": '.user-info, .creator-header, [class*="user"]',
@@ -3846,6 +3861,10 @@ class XiaohongshuPublisher:
                     if (button.hasAttribute("disabled")) {{
                         continue;
                     }}
+                    // [v0.2] xhs-publish-btn uses submit-disabled attr (closed shadow DOM)
+                    if (button.getAttribute("submit-disabled") === "true") {{
+                        continue;
+                    }}
                     const className = String(button.className || "");
                     if (className.includes("disabled")) {{
                         continue;
@@ -4219,20 +4238,28 @@ class XiaohongshuPublisher:
                         node.getBoundingClientRect().height > 0
                     );
 
-                    // Click scheduled publish switch if needed
-                    const switchSelector = {json.dumps(SELECTORS["schedule_switch"])};
-                    const switchElement = document.querySelector(switchSelector);
+                    // Click scheduled publish switch if needed — try v2 then v1
+                    let switchElement = document.querySelector({json.dumps(SELECTORS["schedule_switch_v2"])});
+                    if (!(switchElement instanceof HTMLElement) || !visible(switchElement)) {{
+                        switchElement = document.querySelector({json.dumps(SELECTORS["schedule_switch"])});
+                    }}
                     if (!(switchElement instanceof HTMLElement) || !visible(switchElement)) {{
                         return 'Schedule publish switch is missing.';
                     }}
-                    const isChecked = switchElement.getAttribute('aria-checked');
-                    if (isChecked !== 'true') {{
+                    // [v0.2] Handle both checkbox input and aria-checked element
+                    const isChecked = switchElement.type === 'checkbox'
+                        ? (switchElement.value === 'true' || switchElement.checked)
+                        : switchElement.getAttribute('aria-checked') === 'true';
+                    if (!isChecked) {{
                         switchElement.click();
                         await sleep(300);
                     }}
 
-                    // Set publish time
-                    const el = document.querySelector({json.dumps(SELECTORS["schedule_datetime_input"])});
+                    // Set publish time — try v2 then v1
+                    let el = document.querySelector({json.dumps(SELECTORS["schedule_datetime_input_v2"])});
+                    if (!el) {{
+                        el = document.querySelector({json.dumps(SELECTORS["schedule_datetime_input"])});
+                    }}
                     if (!(el instanceof HTMLInputElement)) {{
                         return 'Schedule publish date-picker input is missing.';
                     }}
@@ -4396,20 +4423,40 @@ class XiaohongshuPublisher:
             time.sleep(0.05)
 
     def _click_publish(self, scheduled: bool = False):
-        """Click the publish button using CDP mouse events."""
+        """Click the publish button inside xhs-publish-btn (closed shadow DOM).
+
+        Strategy: the host element <xhs-publish-btn> is a sticky footer at
+        viewport bottom.  Its shadow DOM renders two buttons side by side:
+          .ce-btn.white   — 120×40, left  (暂存离开)
+          .ce-btn.bg-red  — 120×40, right (定时发布 / 发布)
+        The button group is centred (justify-content:center) with 24px gap.
+
+        We get the host's bounding rect and compute the red button's centre
+        from the known CSS layout:
+          red_cx = host_center_x + 72    (half gap 12 + half red btn 60)
+          red_cy = host_top + 45         (half footer height 45)
+        """
         print("[cdp_publish] Clicking publish button...")
         self._sleep(ACTION_INTERVAL, minimum_seconds=0.25)
         self._wait_for_publish_button_ready(timeout_seconds=20.0)
-        rect = self._get_publish_button_rect()
-        if not rect:
-            raise CDPError(
-                "Could not find publish button. "
-                "The creator center page structure may have changed."
-            )
 
-        cx = rect["x"] + rect["width"] / 2
-        cy = rect["y"] + rect["height"] / 2
-        print(f"[cdp_publish] Clicking publish button at ({cx:.0f}, {cy:.0f})...")
+        rect_info = self._evaluate(f"""
+            (function() {{
+                var host = document.querySelector({json.dumps(SELECTORS["publish_button"])});
+                if (!host) return null;
+                var r = host.getBoundingClientRect();
+                // red button centre = footer centre + 72px right
+                var red_cx = r.left + r.width / 2 + 72;
+                var red_cy = r.top + r.height / 2;
+                return {{ cx: red_cx, cy: red_cy }};
+            }})()
+        """)
+        if not rect_info:
+            raise CDPError("Could not find xhs-publish-btn element.")
+
+        cx = rect_info["cx"]
+        cy = rect_info["cy"]
+        print(f"[cdp_publish] Clicking red button at ({cx:.0f}, {cy:.0f})")
         self._click_mouse(cx, cy)
         print("[cdp_publish] Publish button clicked.")
 
@@ -4494,6 +4541,157 @@ class XiaohongshuPublisher:
             "\n[cdp_publish] Content has been filled in.\n"
             "  Please review in the browser before publishing.\n"
         )
+
+    # [v0.2] publish with mandatory scheduled publishing (default: now + 12h)
+    def publish_v2(
+        self,
+        title: str,
+        content: str,
+        image_paths: list[str] | None = None,
+        schedule: str | None = None,
+    ):
+        """
+        Publish with scheduled time enabled by default.
+
+        Args:
+            title: Article title
+            content: Article body text
+            image_paths: List of local file paths to images
+            schedule: Scheduled time "yyyy-MM-dd HH:mm" (default: now + 12h)
+        """
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+
+        if not image_paths:
+            raise CDPError("At least one image is required to publish on Xiaohongshu.")
+
+        # Default: now + 12 hours
+        if schedule is None:
+            schedule = (datetime.now() + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M")
+            print(f"[cdp_publish] Default schedule: {schedule} (now + 12h)")
+        else:
+            print(f"[cdp_publish] Custom schedule: {schedule}")
+
+        # Reuse the existing publish pipeline, always with scheduled time
+        self.publish(
+            title=title,
+            content=content,
+            image_paths=image_paths,
+            post_time=schedule,
+        )
+
+    # [v0.2] find note_id by title on note-manager first screen
+    def _find_note_by_title(self, title: str) -> str | None:
+        """Navigate to note-manager and find a note by title on the first screen.
+        Returns note_id (from data-impression) or None if not found.
+        """
+        self._navigate(XHS_CREATOR_NOTE_MANAGER_URL)
+        self._sleep(3.0, minimum_seconds=2.0)
+        return self._evaluate(f"""
+            (function() {{
+                var cards = document.querySelectorAll('.note-card');
+                for (var i = 0; i < cards.length; i++) {{
+                    var titleEl = cards[i].querySelector('.note-card__title');
+                    if (titleEl && titleEl.textContent.trim() === {json.dumps(title)}) {{
+                        try {{
+                            var imp = cards[i].getAttribute('data-impression') || '';
+                            var d = JSON.parse(imp);
+                            return (d.noteTarget && d.noteTarget.value && d.noteTarget.value.noteId) || '';
+                        }} catch(e) {{}}
+                    }}
+                }}
+                return '';
+            }})()
+        """)
+
+    # [v0.2] toggle note visibility (公开 / 仅自己可见)
+    def publish_update(self, note_id: str, visible: bool):
+        """
+        Update a published note's visibility.
+
+        Args:
+            note_id: The note ID (24-char hex)
+            visible: True = 公开可见, False = 仅自己可见
+        """
+        if not self.ws:
+            raise CDPError("Not connected. Call connect() first.")
+
+        update_url = f"{XHS_CREATOR_UPDATE_URL}?id={note_id}"
+        self._navigate(update_url)
+        self._sleep(3.0, minimum_seconds=2.0)
+
+        # Click visibility selector to open dropdown
+        trigger = SELECTORS["visibility_trigger"]
+        clicked = self._evaluate(f"""
+            (function() {{
+                var el = document.querySelector({json.dumps(trigger)});
+                if (el) {{ el.click(); return 'ok'; }}
+                return 'not found';
+            }})()
+        """)
+        if clicked != "ok":
+            raise CDPError(f"Visibility trigger not found: {trigger}")
+        print(f"[cdp_publish] Visibility dropdown opened.")
+        self._sleep(1.0, minimum_seconds=0.5)
+
+        # Find the LAST .custom-dropdown-44 and click the target option
+        target_text = "公开可见" if visible else "仅自己可见"
+        result = self._evaluate(f"""
+            (function() {{
+                var dropdowns = document.querySelectorAll({json.dumps(SELECTORS["visibility_dropdown"])});
+                if (!dropdowns.length) return 'no dropdown';
+                // Last dropdown in DOM
+                var dd = dropdowns[dropdowns.length - 1];
+                var options = dd.querySelectorAll('*');
+                for (var i = 0; i < options.length; i++) {{
+                    if (options[i].textContent.trim() === {json.dumps(target_text)}) {{
+                        options[i].click();
+                        return 'ok';
+                    }}
+                }}
+                return 'option not found: ' + {json.dumps(target_text)};
+            }})()
+        """)
+        if result != "ok":
+            # Fallback: click by matching class containing text
+            result2 = self._evaluate(f"""
+                (function() {{
+                    var dropdowns = document.querySelectorAll({json.dumps(SELECTORS["visibility_dropdown"])});
+                    var dd = dropdowns[dropdowns.length - 1];
+                    // Try clicking any element containing the target text
+                    var all = dd.querySelectorAll('*');
+                    for (var i = 0; i < all.length; i++) {{
+                        if (all[i].textContent.trim().indexOf({json.dumps(target_text)}) >= 0) {{
+                            all[i].click();
+                            return 'ok';
+                        }}
+                    }}
+                    return 'not found';
+                }})()
+            """)
+            if result2 != "ok":
+                raise CDPError(f"Visibility option not found: {target_text} (dropdown: {result})")
+
+        mode = "公开" if visible else "隐藏"
+        print(f"[cdp_publish] Visibility set to: {mode} ({target_text})")
+        self._sleep(1.0, minimum_seconds=0.5)
+
+        # Click the red button inside xhs-publish-btn (closed shadow DOM).
+        # Update page has only ONE button (save-draft=false), so it is centred.
+        # red_cx = footer_center_x, red_cy = footer_top + 45
+        rect = self._evaluate(f"""
+            (function() {{
+                var host = document.querySelector({json.dumps(SELECTORS["publish_button"])});
+                if (!host) return null;
+                var r = host.getBoundingClientRect();
+                return {{ cx: r.left + r.width / 2, cy: r.top + r.height / 2 }};
+            }})()
+        """)
+        if not rect:
+            raise CDPError("xhs-publish-btn not found on update page")
+        self._click_mouse(rect["cx"], rect["cy"])
+        self._sleep(2.0, minimum_seconds=1.0)
+        print(f"[cdp_publish] Update submitted (visible={visible}).")
 
     def publish_video(
         self,
@@ -4625,14 +4823,25 @@ def main():
     p_fill_media.add_argument("--images", nargs="+", help="Local image file paths")
     p_fill_media.add_argument("--video", help="Local video file path")
 
-    # publish - fill form and click publish
-    p_pub = sub.add_parser("publish", help="Fill form and click publish")
+    # publish - fill form and publish (v0.2: defaults to scheduled +12h)
+    p_pub = sub.add_parser("publish", help="Fill form and publish (scheduled by default)")
     p_pub.add_argument("--title", required=True)
     p_pub.add_argument("--content", default=None)
     p_pub.add_argument("--content-file", default=None, help="Read content from file")
     p_pub_media = p_pub.add_mutually_exclusive_group(required=True)
     p_pub_media.add_argument("--images", nargs="+", help="Local image file paths")
     p_pub_media.add_argument("--video", help="Local video file path")
+    # [v0.2] scheduled publishing
+    p_pub.add_argument("--schedule", default=None,
+                       help="Scheduled publish time 'yyyy-MM-dd HH:MM' (default: now+12h)")
+
+    # [v0.2] publish-update - toggle note visibility
+    p_pub_upd = sub.add_parser("publish-update", aliases=["publish_update"],
+        help="Toggle note visibility (公开/仅自己可见)")
+    p_pub_upd.add_argument("--note-id", required=True, help="Note ID (24-char hex)")
+    p_pub_upd_vis = p_pub_upd.add_mutually_exclusive_group(required=True)
+    p_pub_upd_vis.add_argument("--public", action="store_true", help="Set visible to 公开可见")
+    p_pub_upd_vis.add_argument("--private", action="store_true", help="Set visible to 仅自己可见")
 
     # click-publish - just click the publish button on current page
     sub.add_parser("click-publish", help="Click publish button on already-filled page")
@@ -5027,6 +5236,7 @@ def main():
             print("GET_LOGIN_QRCODE_RESULT:")
             print(json.dumps(payload, ensure_ascii=False, indent=2))
 
+        # [v0.2] publish now uses publish_v2 (scheduled by default)
         elif args.command in ("fill", "publish"):
             content = args.content
             if args.content_file:
@@ -5042,14 +5252,34 @@ def main():
                     title=args.title, content=content, video_path=args.video
                 )
             else:
-                publisher.publish(
-                    title=args.title, content=content, image_paths=args.images
+                # [v0.2] Use publish_v2 with mandatory scheduled publishing
+                publisher.publish_v2(
+                    title=args.title, content=content,
+                    image_paths=args.images,
+                    schedule=getattr(args, "schedule", None),
                 )
             print("FILL_STATUS: READY_TO_PUBLISH")
 
             if args.command == "publish":
                 publisher._click_publish()
                 print("PUBLISH_STATUS: PUBLISHED")
+                # [v0.2] Find the new note by title on note-manager first screen
+                publisher._sleep(2.0, minimum_seconds=1.0)
+                note_id = publisher._find_note_by_title(args.title)
+                if note_id:
+                    print(f"PUBLISH_NOTE_ID: {note_id}")
+                else:
+                    print("PUBLISH_NOTE_ID: NOT_FOUND", file=sys.stderr)
+
+        # [v0.2] publish-update — toggle note visibility
+        elif args.command in ("publish-update", "publish_update"):
+            publisher.connect(reuse_existing_tab=reuse_existing_tab)
+            if not publisher.check_login():
+                print("NOT_LOGGED_IN")
+                sys.exit(1)
+            visible = True if getattr(args, "public", False) else False
+            publisher.publish_update(args.note_id, visible)
+            print("PUBLISH_UPDATE_STATUS: UPDATED")
 
         elif args.command == "click-publish":
             publisher.connect(
